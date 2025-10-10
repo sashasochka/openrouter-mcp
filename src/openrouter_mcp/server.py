@@ -39,21 +39,22 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Import handlers to register MCP tools
+# Create FastMCP instance  (define BEFORE importing handlers)
+mcp = FastMCP("openrouter-mcp")
+
+# Now import handlers so their @mcp.tool decorators run
 try:
     from .handlers import chat  # noqa: F401
     from .handlers import multimodal  # noqa: F401
     from .handlers import mcp_benchmark  # noqa: F401
     from .handlers import collective_intelligence  # noqa: F401
 except ImportError:
-    # Fallback for direct execution
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
     from openrouter_mcp.handlers import chat  # noqa: F401
     from openrouter_mcp.handlers import multimodal  # noqa: F401
     from openrouter_mcp.handlers import mcp_benchmark  # noqa: F401
     from openrouter_mcp.handlers import collective_intelligence  # noqa: F401
-
 
 def validate_environment() -> None:
     """Validate that required environment variables are set."""
