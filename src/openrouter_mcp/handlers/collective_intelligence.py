@@ -10,8 +10,10 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
+
 from pydantic import BaseModel, Field
 from fastmcp import FastMCP
+from fastmcp.server.context import Context
 
 from ..client.openrouter import OpenRouterClient
 from ..collective_intelligence import (
@@ -29,7 +31,8 @@ from ..collective_intelligence import (
     ProcessingResult,
     ModelProvider,
     MultiStageCollectiveOrchestrator,
-    RunConfiguration
+    RunConfiguration,
+    ModelPlan,
 )
 from ..collective_intelligence.base import ModelCapability
 
@@ -37,6 +40,43 @@ from ..collective_intelligence.base import ModelCapability
 from ..server import mcp
 
 logger = logging.getLogger(__name__)
+
+
+PREMIUM_ORCHESTRATION_PLAN: List[ModelPlan] = [
+    ModelPlan(
+        model_id="openai/gpt-5-pro",
+        count=5,
+        request_options={"reasoning": {"effort": "high"}},
+    ),
+    ModelPlan(
+        model_id="openai/o3-deepresearch-preview",
+        count=1,
+        request_options={"reasoning": {"effort": "high"}},
+    ),
+    ModelPlan(
+        model_id="xai/grok-4",
+        count=1,
+    ),
+]
+
+FAST_ORCHESTRATION_PLAN: List[ModelPlan] = [
+    ModelPlan(
+        model_id="openai/gpt-5-fast",
+        count=5,
+    ),
+    ModelPlan(
+        model_id="xai/grok-4-fast",
+        count=1,
+    ),
+    ModelPlan(
+        model_id="google/gemini-2.5-flash",
+        count=1,
+    ),
+]
+
+# Final synthesis defaults for the premium and fast/test variants.
+PREMIUM_FINAL_OPTIONS: Dict[str, Any] = {"reasoning": {"effort": "high"}}
+FAST_FINAL_OPTIONS: Dict[str, Any] = {"response_mode": "fast"}
 
 
 class OpenRouterModelProvider:
@@ -104,7 +144,8 @@ class OpenRouterModelProvider:
                 cost=cost,
                 metadata={
                     "usage": usage,
-                    "response_metadata": response.get("model", {})
+                    "response_metadata": response.get("model", {}),
+                    "request_options": task.metadata.get("requested_options"),
                 }
             )
             
@@ -303,8 +344,8 @@ class MultiStageCollectiveRequest(BaseModel):
         description="Agreement threshold to keep the roster steady.",
     )
     timeout_seconds: float = Field(
-        75.0,
-        description="Per-model timeout (seconds) to protect against stalled requests.",
+        3600.0,
+        description="Per-model timeout (seconds). GPT-5-class runs can stream for up to an hour.",
     )
     system_prompt: Optional[str] = Field(
         None,
@@ -334,6 +375,7 @@ class MultiStageCollectiveResponse(BaseModel):
     final_metadata: Dict[str, Any]
     run_summaries: List[MultiStageRunSummary]
     deliberation_summary: str
+    progress_events: List[Dict[str, Any]]
 
 
 def get_openrouter_client() -> OpenRouterClient:
@@ -765,23 +807,15 @@ async def collaborative_problem_solving(request: CollaborativeSolvingRequest) ->
 @mcp.tool()
 async def multi_stage_collective_answer(
     request: MultiStageCollectiveRequest,
+    ctx: Context,
 ) -> MultiStageCollectiveResponse:
-    """
-    Orchestrate the full multi-run, heavy-model collective intelligence workflow.
-
-    The function mirrors the specification verbatim:
-    1. Launch a wide, heavyweight swarm (default eight models from multiple vendors).
-    2. Measure agreement and adapt the population (shrink on consensus, expand on disagreement).
-    3. Repeat up to four total runs.
-    4. Ask the single most powerful available model to synthesise the definitive answer.
-    """
+    """Premium multi-model orchestration using GPT-5 Pro, O3 DeepResearch, and Grok 4."""
 
     logger.info(
-        "Starting multi-stage collective orchestration "
+        "Starting premium multi-stage orchestration "
         f"(max_runs={request.max_runs}, initial_models={request.initial_model_count})"
     )
 
-    # Derive orchestration configuration while applying safety clamps.
     run_config = RunConfiguration(
         max_runs=max(1, min(request.max_runs, 4)),
         initial_model_count=max(2, request.initial_model_count),
@@ -793,9 +827,7 @@ async def multi_stage_collective_answer(
         timeout_seconds=max(5.0, request.timeout_seconds),
     )
 
-    # Create the base TaskContext.  We reuse the helper so that task-type parsing
-    # and validation stays centralised.
-    requirements = {}
+    requirements: Dict[str, Any] = {}
     if request.system_prompt:
         requirements["system_prompt"] = request.system_prompt
 
@@ -805,7 +837,6 @@ async def multi_stage_collective_answer(
         requirements=requirements,
     )
 
-    # Ensure downstream telemetry carries provenance details.
     task.metadata.update(request.metadata or {})
     task.metadata["orchestration_tool"] = "multi_stage_collective_answer"
 
@@ -814,18 +845,22 @@ async def multi_stage_collective_answer(
     orchestrator = MultiStageCollectiveOrchestrator(
         model_provider=model_provider,
         run_config=run_config,
+        default_plan=PREMIUM_ORCHESTRATION_PLAN,
+        final_synthesis_model_id="openai/gpt-5-reasoning-high",
+        final_synthesis_options=PREMIUM_FINAL_OPTIONS,
     )
 
     try:
         async with client:
-            final_synthesis, snapshots = await orchestrator.orchestrate(
-                task, candidate_models=request.candidate_models
+            final_synthesis, snapshots, progress_events = await orchestrator.orchestrate(
+                task,
+                candidate_models=request.candidate_models,
+                context=ctx,
             )
     except Exception as exc:
         logger.error(f"Multi-stage orchestration failed: {exc}")
         raise
 
-    # Convert internal snapshots into response-friendly structures.
     run_summaries: List[MultiStageRunSummary] = []
     for snapshot in snapshots:
         model_entries: List[Dict[str, Any]] = []
@@ -835,6 +870,9 @@ async def multi_stage_collective_answer(
             model_entries.append(
                 {
                     "model_id": result.model_id,
+                    "invocation_label": result.metadata.get(
+                        "invocation_label", result.model_id
+                    ),
                     "confidence": result.confidence,
                     "tokens_used": result.tokens_used,
                     "cost": result.cost,
@@ -856,9 +894,11 @@ async def multi_stage_collective_answer(
         "model_id": final_synthesis.model_id,
         "prompt_tokens": final_synthesis.prompt_tokens,
         "deliberation_runs": len(snapshots),
+        "processing_time": final_synthesis.result.processing_time,
+        "tokens_used": final_synthesis.result.tokens_used,
+        "cost": final_synthesis.result.cost,
     }
 
-    # Assemble the Pydantic response for consistent downstream contracts.
     response = MultiStageCollectiveResponse(
         final_model=final_synthesis.model_id,
         final_confidence=final_synthesis.result.confidence,
@@ -866,10 +906,123 @@ async def multi_stage_collective_answer(
         final_metadata=final_metadata,
         run_summaries=run_summaries,
         deliberation_summary=final_synthesis.summary,
+        progress_events=progress_events,
     )
 
     logger.info(
-        "Completed multi-stage collective orchestration "
+        "Completed premium multi-stage orchestration "
+        f"(final_model={response.final_model}, runs={len(run_summaries)})"
+    )
+
+    return response.model_dump()
+
+
+@mcp.tool()
+async def multi_stage_collective_answer_test(
+    request: MultiStageCollectiveRequest,
+    ctx: Context,
+) -> MultiStageCollectiveResponse:
+    """Fast test-suite variant using GPT-5 Fast, Grok 4 Fast, and Gemini 2.5 Flash."""
+
+    logger.info(
+        "Starting fast multi-stage orchestration "
+        f"(max_runs={request.max_runs}, initial_models={request.initial_model_count})"
+    )
+
+    run_config = RunConfiguration(
+        max_runs=max(1, min(request.max_runs, 4)),
+        initial_model_count=max(2, request.initial_model_count),
+        max_parallel_models=max(2, request.max_parallel_models),
+        high_agreement_threshold=min(1.0, max(0.0, request.high_agreement_threshold)),
+        moderate_agreement_threshold=min(
+            1.0, max(0.0, request.moderate_agreement_threshold)
+        ),
+        timeout_seconds=min(120.0, max(5.0, request.timeout_seconds)),
+    )
+
+    requirements: Dict[str, Any] = {}
+    if request.system_prompt:
+        requirements["system_prompt"] = request.system_prompt
+
+    task = create_task_context(
+        content=request.prompt,
+        task_type=request.task_type,
+        requirements=requirements,
+    )
+
+    task.metadata.update(request.metadata or {})
+    task.metadata["orchestration_tool"] = "multi_stage_collective_answer_test"
+
+    client = get_openrouter_client()
+    model_provider = OpenRouterModelProvider(client)
+    orchestrator = MultiStageCollectiveOrchestrator(
+        model_provider=model_provider,
+        run_config=run_config,
+        default_plan=FAST_ORCHESTRATION_PLAN,
+        final_synthesis_model_id="openai/gpt-4o",
+        final_synthesis_options=FAST_FINAL_OPTIONS,
+    )
+
+    try:
+        async with client:
+            final_synthesis, snapshots, progress_events = await orchestrator.orchestrate(
+                task,
+                context=ctx,
+            )
+    except Exception as exc:
+        logger.error(f"Fast multi-stage orchestration failed: {exc}")
+        raise
+
+    run_summaries: List[MultiStageRunSummary] = []
+    for snapshot in snapshots:
+        model_entries: List[Dict[str, Any]] = []
+        for result in snapshot.results:
+            excerpt = (result.content or "").strip()
+            excerpt = excerpt[:280] + ("…" if len(excerpt) > 280 else "")
+            model_entries.append(
+                {
+                    "model_id": result.model_id,
+                    "invocation_label": result.metadata.get(
+                        "invocation_label", result.model_id
+                    ),
+                    "confidence": result.confidence,
+                    "tokens_used": result.tokens_used,
+                    "cost": result.cost,
+                    "processing_time": result.processing_time,
+                    "excerpt": excerpt,
+                }
+            )
+
+        run_summaries.append(
+            MultiStageRunSummary(
+                run_index=snapshot.run_index,
+                agreement_level=snapshot.agreement_level.value,
+                average_similarity=snapshot.average_similarity,
+                models=model_entries,
+            )
+        )
+
+    final_metadata = {
+        "model_id": final_synthesis.model_id,
+        "prompt_tokens": final_synthesis.prompt_tokens,
+        "deliberation_runs": len(snapshots),
+        "processing_time": final_synthesis.result.processing_time,
+        "tokens_used": final_synthesis.result.tokens_used,
+        "cost": final_synthesis.result.cost,
+    }
+
+    response = MultiStageCollectiveResponse(
+        final_model=final_synthesis.model_id,
+        final_confidence=final_synthesis.result.confidence,
+        final_answer=final_synthesis.result.content,
+        final_metadata=final_metadata,
+        run_summaries=run_summaries,
+        deliberation_summary=final_synthesis.summary,
+        progress_events=progress_events,
+    )
+
+    logger.info(
+        "Completed fast multi-stage orchestration "
         f"(final_model={response.final_model}, runs={len(run_summaries)})"
     )
 

@@ -22,12 +22,12 @@ class DummyClient:
 class FakeOrchestrator:
     """Orchestrator stub that returns canned results for handler testing."""
 
-    def __init__(self, model_provider, run_config):
+    def __init__(self, model_provider, run_config, **_):
         self.model_provider = model_provider
         self.run_config = run_config
         self.invocations = 0
 
-    async def orchestrate(self, task: TaskContext, candidate_models=None):
+    async def orchestrate(self, task: TaskContext, candidate_models=None, context=None):
         self.invocations += 1
         # Mimic final synthesis
         final_result = ProcessingResult(
@@ -54,6 +54,7 @@ class FakeOrchestrator:
             processing_time=1.1,
             tokens_used=300,
             cost=0.31,
+            metadata={"invocation_label": "google/gemini-2.5-pro#1"},
         )
 
         snapshot = RunSnapshot(
@@ -64,7 +65,22 @@ class FakeOrchestrator:
             average_similarity=0.82,
         )
 
-        return final, [snapshot]
+        if context is not None:
+            await context.info("fake progress")
+            await context.report_progress(1, 2, "run complete")
+
+        return final, [snapshot], [{"message": "fake progress"}]
+
+
+class StubContext:
+    def __init__(self):
+        self.events = []
+
+    async def info(self, message: str) -> None:
+        self.events.append(("info", message))
+
+    async def report_progress(self, progress: float, total: float | None = None, message: str | None = None) -> None:
+        self.events.append(("progress", progress, total, message))
 
 
 @pytest.mark.asyncio
@@ -89,7 +105,8 @@ async def test_multi_stage_collective_handler(monkeypatch):
     )
 
     tool = multi_stage_collective_answer
-    response = await tool.fn(request)
+    context = StubContext()
+    response = await tool.fn(request=request, ctx=context)
 
     assert response["final_model"] == "openai/gpt-5-pro"
     assert response["final_confidence"] == pytest.approx(0.96, rel=1e-6)
@@ -97,3 +114,5 @@ async def test_multi_stage_collective_handler(monkeypatch):
     summary = response["run_summaries"][0]
     assert summary["agreement_level"] == AgreementLevel.HIGH_CONSENSUS.value
     assert response["deliberation_summary"].startswith("Run 1")
+    assert response["progress_events"], "Progress events should be returned."
+    assert context.events, "Context should receive progress notifications."

@@ -147,7 +147,7 @@ async def test_orchestrator_shrinks_population_after_high_agreement():
         content="Evaluate city-wide renewable energy strategy.",
     )
 
-    final, snapshots = await orchestrator.orchestrate(task)
+    final, snapshots, progress_events = await orchestrator.orchestrate(task)
 
     assert len(snapshots) >= 2, "High consensus should trigger a follow-up run with fewer agents."
     first, second = snapshots[0], snapshots[1]
@@ -156,6 +156,7 @@ async def test_orchestrator_shrinks_population_after_high_agreement():
     assert final.model_id == "openai/gpt-5-pro"
     assert provider.final_calls == 1
     assert "[FINAL]" in final.result.content
+    assert progress_events, "Progress events should be recorded for visibility."
 
 
 @pytest.mark.asyncio
@@ -175,7 +176,7 @@ async def test_orchestrator_expands_on_low_agreement():
         content="Plan resilient regional energy infrastructure.",
     )
 
-    final, snapshots = await orchestrator.orchestrate(task)
+    final, snapshots, progress_events = await orchestrator.orchestrate(task)
 
     assert len(snapshots) >= 2, "Low agreement should trigger additional runs."
     first_models = set(snapshots[0].model_ids)
@@ -183,3 +184,4 @@ async def test_orchestrator_expands_on_low_agreement():
     assert second_models - first_models, "Additional models should be introduced on low agreement."
     assert final.model_id == "openai/gpt-5-pro"
     assert provider.final_calls == 1
+    assert progress_events, "Progress events should be recorded for visibility."

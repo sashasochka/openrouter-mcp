@@ -18,7 +18,18 @@ import asyncio
 import math
 import statistics
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from .base import (
     ModelInfo,
@@ -28,6 +39,9 @@ from .base import (
     TaskType,
 )
 from .consensus_engine import AgreementLevel
+
+if TYPE_CHECKING:
+    from fastmcp.server.context import Context
 
 
 @dataclass
@@ -47,7 +61,7 @@ class RunConfiguration:
     high_agreement_threshold: float = 0.75
     moderate_agreement_threshold: float = 0.55
     minimum_model_count: int = 2
-    timeout_seconds: float = 75.0  # generous safety net for heavyweight models
+    timeout_seconds: float = 3600.0  # GPT-5-class models can stream for up to an hour
 
 
 @dataclass
@@ -65,6 +79,27 @@ class RunSnapshot:
     average_similarity: float
     notes: Dict[str, Any] = field(default_factory=dict)
 
+
+@dataclass
+class ModelPlan:
+    """Desired default composition of the orchestration roster."""
+
+    model_id: str
+    count: int = 1
+    request_options: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ModelInvocation:
+    """Concrete model invocation including duplicate instances and options."""
+
+    model: ModelInfo
+    plan: ModelPlan
+    instance_index: int = 0
+
+    @property
+    def label(self) -> str:
+        return f"{self.model.model_id}#{self.instance_index + 1}"
 
 @dataclass
 class FinalSynthesis:
@@ -90,6 +125,9 @@ class MultiStageCollectiveOrchestrator:
         *,
         run_config: Optional[RunConfiguration] = None,
         model_priority: Optional[Sequence[str]] = None,
+        default_plan: Optional[Sequence[ModelPlan]] = None,
+        final_synthesis_model_id: Optional[str] = None,
+        final_synthesis_options: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Args:
@@ -116,12 +154,17 @@ class MultiStageCollectiveOrchestrator:
             )
         )
 
+        self.default_plan: Tuple[ModelPlan, ...] = tuple(default_plan or ())
+        self.final_synthesis_model_id = final_synthesis_model_id
+        self.final_synthesis_options = final_synthesis_options or {}
+
     async def orchestrate(
         self,
         task: TaskContext,
         *,
         candidate_models: Optional[Sequence[str]] = None,
-    ) -> Tuple[FinalSynthesis, List[RunSnapshot]]:
+        context: Optional["Context"] = None,
+    ) -> Tuple[FinalSynthesis, List[RunSnapshot], List[Dict[str, Any]]]:
         """
         Execute the full multi-stage reasoning pipeline.
 
@@ -135,7 +178,8 @@ class MultiStageCollectiveOrchestrator:
         """
         # Step 1: discover the model universe.
         available_models = await self.model_provider.get_available_models()
-        scored_models = self._score_models(available_models, candidate_models)
+        invocation_pool = self._build_invocations(available_models, candidate_models)
+        scored_models = self._score_invocations(invocation_pool)
 
         if not scored_models:
             raise ValueError("No models available for multi-stage orchestration.")
@@ -143,28 +187,66 @@ class MultiStageCollectiveOrchestrator:
         # Seed the first wave with the requested initial count (clamped by the
         # available pool and global parallelism guardrails).
         current_selection = [
-            model for model, _score in scored_models[: self.config.initial_model_count]
+            invocation
+            for invocation, _score in scored_models[: self.config.initial_model_count]
         ]
 
         snapshots: List[RunSnapshot] = []
+        progress_events: List[Dict[str, Any]] = []
         # Tracks which models have already been used, so that disagreement-driven
         # expansions can introduce fresh perspectives instead of recycling.
         used_model_ids: set[str] = set()
+
+        async def emit_progress(
+            message: str,
+            *,
+            progress: Optional[float] = None,
+            total: Optional[float] = None,
+        ) -> None:
+            event: Dict[str, Any] = {"message": message}
+            if progress is not None:
+                event["progress"] = progress
+            if total is not None:
+                event["total"] = total
+            progress_events.append(event)
+
+            if context is not None:
+                try:
+                    if progress is not None:
+                        await context.report_progress(progress, total, message)
+                    await context.info(message)
+                except Exception:
+                    # Progress notifications should be best-effort; ignore transport errors.
+                    pass
 
         for round_index in range(1, self.config.max_runs + 1):
             if not current_selection:
                 break  # Safety: nothing left to run.
 
             capped_selection = current_selection[: self.config.max_parallel_models]
-            used_model_ids.update(model.model_id for model in capped_selection)
+            used_model_ids.update(inv.model.model_id for inv in capped_selection)
+
+            await emit_progress(
+                f"Run {round_index}: launching {len(capped_selection)} invocations",
+                progress=round_index - 1,
+                total=float(self.config.max_runs),
+            )
 
             # Execute the wide parallel pass for this round.
-            results = await self._execute_wave(task, capped_selection, round_index)
+            results = await self._execute_wave(
+                task,
+                capped_selection,
+                round_index,
+                emit_progress,
+            )
             agreement, agreement_level = self._measure_agreement(results)
 
             snapshot = RunSnapshot(
                 run_index=round_index,
-                model_ids=[result.model_id for result in results],
+                model_ids=[
+                    result.metadata.get("invocation_label", result.model_id)
+                    for result in results
+                ],
                 results=results,
                 agreement_level=agreement_level,
                 average_similarity=agreement,
@@ -174,6 +256,12 @@ class MultiStageCollectiveOrchestrator:
                 },
             )
             snapshots.append(snapshot)
+
+            await emit_progress(
+                f"Run {round_index} completed with {agreement_level.value} (avg similarity {agreement:.2f})",
+                progress=round_index,
+                total=float(self.config.max_runs),
+            )
 
             # Termination criteria:
             # - If we reach high agreement before the last run, we break early.
@@ -196,39 +284,77 @@ class MultiStageCollectiveOrchestrator:
         # Final step: ask the strongest available model to synthesise the combined answer.
         final_model = self._select_final_model(scored_models, snapshots)
         final_synthesis = await self._generate_final_synthesis(
-            task, final_model, snapshots
+            task,
+            final_model,
+            snapshots,
         )
 
-        return final_synthesis, snapshots
+        await emit_progress(
+            "Final synthesis completed",
+            progress=float(self.config.max_runs),
+            total=float(self.config.max_runs),
+        )
+
+        return final_synthesis, snapshots, progress_events
 
     # ------------------------------------------------------------------
     # Model selection utilities
     # ------------------------------------------------------------------
 
-    def _score_models(
+    def _build_invocations(
         self,
         models: Iterable[ModelInfo],
         candidate_models: Optional[Sequence[str]],
-    ) -> List[Tuple[ModelInfo, float]]:
-        """
-        Score each model by a coarse "power" metric.
+    ) -> List[ModelInvocation]:
+        """Prepare the invocation roster using the configured default plan."""
 
-        The heuristic combines provider prestige, context length, and cost-per-token.
-        Models not present in the optional allowlist are discarded early.
-        """
-        allowlist = {model_id.lower() for model_id in candidate_models or []}
-        scored: List[Tuple[ModelInfo, float]] = []
+        lookup: Dict[str, ModelInfo] = {model.model_id: model for model in models}
+        invocations: List[ModelInvocation] = []
 
-        for model in models:
-            if allowlist and model.model_id.lower() not in allowlist:
+        # Prepare base plan (default + user-specified extras).
+        plan_sequence: List[ModelPlan] = list(self.default_plan)
+
+        if not plan_sequence:
+            plan_sequence = [ModelPlan(model_id=model_id) for model_id in lookup.keys()]
+
+        plan_ids_lower = {plan.model_id.lower() for plan in plan_sequence}
+
+        for model_id in candidate_models or []:
+            if model_id.lower() not in plan_ids_lower:
+                plan_sequence.append(ModelPlan(model_id=model_id))
+                plan_ids_lower.add(model_id.lower())
+
+        for plan in plan_sequence:
+            model = lookup.get(plan.model_id)
+            if model is None:
                 continue
 
+            for idx in range(max(1, plan.count)):
+                invocations.append(
+                    ModelInvocation(
+                        model=model,
+                        plan=plan,
+                        instance_index=idx,
+                    )
+                )
+
+        return invocations
+
+    def _score_invocations(
+        self, invocations: Iterable[ModelInvocation]
+    ) -> List[Tuple[ModelInvocation, float]]:
+        """Score each invocation using provider prestige, context and cost."""
+
+        scored: List[Tuple[ModelInvocation, float]] = []
+
+        for invocation in invocations:
+            model = invocation.model
             provider_score = self._provider_priority(model.provider)
             context_multiplier = math.log(max(model.context_length, 2048), 2) / 10.0
             cost_component = min(model.cost_per_token or 0.00002, 0.0005) * 100.0
 
             score = provider_score + context_multiplier + cost_component
-            scored.append((model, score))
+            scored.append((invocation, score))
 
         scored.sort(key=lambda item: item[1], reverse=True)
         return scored
@@ -259,17 +385,18 @@ class MultiStageCollectiveOrchestrator:
     async def _execute_wave(
         self,
         task: TaskContext,
-        models: Sequence[ModelInfo],
+        invocations: Sequence[ModelInvocation],
         run_index: int,
+        progress_callback: Callable[..., Awaitable[None]],
     ) -> List[ProcessingResult]:
         """
         Fire off a single wave of model calls concurrently.
 
-        Each model receives an augmented TaskContext capturing the current run number
-        so downstream logging and telemetry can differentiate outputs.
+        Each invocation maintains its own label so progress events can reference
+        duplicate instances of the same base model (e.g. multiple GPT-5 runs).
         """
-        async def invoke(model: ModelInfo) -> ProcessingResult:
-            # Clone the original task so individual runs remain independent.
+
+        async def invoke(invocation: ModelInvocation) -> ProcessingResult:
             cloned_task = TaskContext(
                 task_type=task.task_type,
                 content=task.content,
@@ -280,27 +407,51 @@ class MultiStageCollectiveOrchestrator:
                 metadata={
                     **task.metadata,
                     "orchestration_run": run_index,
-                    "orchestration_model": model.model_id,
+                    "orchestration_model": invocation.model.model_id,
+                    "invocation_label": invocation.label,
+                    "requested_options": invocation.plan.request_options,
                 },
             )
             return await asyncio.wait_for(
-                self.model_provider.process_task(cloned_task, model.model_id),
+                self.model_provider.process_task(
+                    cloned_task,
+                    invocation.model.model_id,
+                ),
                 timeout=self.config.timeout_seconds,
             )
 
-        tasks = [asyncio.create_task(invoke(model)) for model in models]
+        async_tasks: List[asyncio.Task[ProcessingResult]] = []
+        for invocation in invocations:
+            async_task = asyncio.create_task(invoke(invocation))
+            setattr(async_task, "_orchestrator_invocation", invocation)
+            async_tasks.append(async_task)
+
         results: List[ProcessingResult] = []
 
-        for task_future in asyncio.as_completed(tasks):
-            try:
-                result = await task_future
-                results.append(result)
-            except asyncio.TimeoutError:
-                # The orchestrator tolerates slow models by simply omitting them.
-                continue
-            except Exception as exc:  # pragma: no cover - defensive logging path
-                # We do not fail the entire orchestration if a single model call fails.
-                continue
+        pending: set[asyncio.Task[ProcessingResult]] = set(async_tasks)
+        while pending:
+            done, pending = await asyncio.wait(
+                pending,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for task_future in done:
+                invocation = getattr(task_future, "_orchestrator_invocation")
+                try:
+                    result = await task_future
+                    result.metadata["invocation_label"] = invocation.label
+                    results.append(result)
+                    await progress_callback(
+                        f"Run {run_index}: {invocation.label} completed",
+                    )
+                except asyncio.TimeoutError:
+                    await progress_callback(
+                        f"Run {run_index}: {invocation.label} timed out after {self.config.timeout_seconds:.0f}s",
+                    )
+                except Exception as exc:  # pragma: no cover - defensive logging path
+                    await progress_callback(
+                        f"Run {run_index}: {invocation.label} failed ({exc})",
+                    )
 
         return results
 
@@ -369,80 +520,77 @@ class MultiStageCollectiveOrchestrator:
 
     def _plan_next_wave(
         self,
-        scored_models: Sequence[Tuple[ModelInfo, float]],
+        scored_invocations: Sequence[Tuple[ModelInvocation, float]],
         used_model_ids: set[str],
         last_results: Sequence[ProcessingResult],
         average_similarity: float,
         agreement_level: AgreementLevel,
-    ) -> List[ModelInfo]:
+    ) -> List[ModelInvocation]:
         """
-        Decide which models should participate in the next run.
+        Decide which model invocations should participate in the next run.
 
-        The policy is intentionally simple:
-        - High agreement -> halve the roster (keep the highest-confidence answers).
-        - Moderate agreement -> keep roster steady, focusing on confident models.
-        - Low agreement -> expand roster with fresh models that have not been used yet.
+        The policy mirrors the narrative specification:
+        - High agreement: halve the roster, keeping the highest-confidence answers.
+        - Moderate agreement: keep roster size steady but rotate in a fresh voice.
+        - Low/no agreement: expand with unused models to gather more perspectives.
         """
-        current_models = [result.model_id for result in last_results]
-        # Sort results by the model-reported confidence so reductions retain
-        # the most self-assured answers.
+
+        invocation_lookup = {
+            invocation.label: invocation for invocation, _ in scored_invocations
+        }
+        fallback_lookup: Dict[str, ModelInvocation] = {}
+        for invocation, _ in scored_invocations:
+            fallback_lookup.setdefault(invocation.model.model_id, invocation)
+
+        def resolve_result(result: ProcessingResult) -> Optional[ModelInvocation]:
+            label = result.metadata.get("invocation_label")
+            if label and label in invocation_lookup:
+                return invocation_lookup[label]
+            return fallback_lookup.get(result.model_id)
+
         sorted_results = sorted(
-            last_results, key=lambda res: res.confidence, reverse=True
+            last_results,
+            key=lambda res: res.confidence,
+            reverse=True,
         )
+        sorted_invocations = [resolve_result(res) for res in sorted_results]
+        sorted_invocations = [inv for inv in sorted_invocations if inv is not None]
 
         if agreement_level in (AgreementLevel.HIGH_CONSENSUS, AgreementLevel.UNANIMOUS):
-            keep_count = max(self.config.minimum_model_count, len(sorted_results) // 2)
-            return self._resolve_models_by_ids(
-                [result.model_id for result in sorted_results[:keep_count]],
-                scored_models,
+            keep_count = max(
+                self.config.minimum_model_count,
+                max(1, len(sorted_invocations) // 2),
             )
+            return sorted_invocations[:keep_count] or sorted_invocations
 
         if agreement_level == AgreementLevel.MODERATE_CONSENSUS:
-            # Hold the line: keep the same number of models but replace the least
-            # confident contributor with a fresh candidate if one exists.
-            next_ids = [result.model_id for result in sorted_results]
+            next_wave = sorted_invocations.copy()
             replacement_candidates = [
-                model for model, _score in scored_models if model.model_id not in used_model_ids
+                inv
+                for inv, _ in scored_invocations
+                if inv.model.model_id not in used_model_ids and inv not in next_wave
             ]
-            if replacement_candidates and next_ids:
-                next_ids[-1] = replacement_candidates[0].model_id
-                used_model_ids.add(replacement_candidates[0].model_id)
-            return self._resolve_models_by_ids(next_ids, scored_models)
+            if replacement_candidates and next_wave:
+                next_wave[-1] = replacement_candidates[0]
+                used_model_ids.add(replacement_candidates[0].model.model_id)
+            return next_wave or sorted_invocations
 
         # Low or no consensus: recruit more voices if possible.
-        expansion_candidates = [
-            model
-            for model, _score in scored_models
-            if model.model_id not in used_model_ids
-        ]
-        expanded_ids = current_models.copy()
-        for candidate in expansion_candidates:
-            if len(expanded_ids) >= self.config.max_parallel_models:
+        expanded: List[ModelInvocation] = list(sorted_invocations)
+        if not expanded:
+            expanded = [inv for inv, _ in scored_invocations[: self.config.minimum_model_count]]
+
+        for inv, _ in scored_invocations:
+            if len(expanded) >= self.config.max_parallel_models:
                 break
-            expanded_ids.append(candidate.model_id)
-            used_model_ids.add(candidate.model_id)
-
-        return self._resolve_models_by_ids(expanded_ids, scored_models)
-
-    def _resolve_models_by_ids(
-        self,
-        model_ids: Sequence[str],
-        scored_models: Sequence[Tuple[ModelInfo, float]],
-    ) -> List[ModelInfo]:
-        """
-        Convert a list of model IDs back into ModelInfo references.
-        """
-        lookup = {model.model_id: model for model, _score in scored_models}
-        resolved = [lookup[model_id] for model_id in model_ids if model_id in lookup]
-        # Preserve input order but drop duplicates that might appear due to reuse.
-        seen = set()
-        unique: List[ModelInfo] = []
-        for model in resolved:
-            if model.model_id in seen:
+            if inv in expanded:
                 continue
-            seen.add(model.model_id)
-            unique.append(model)
-        return unique
+            if inv.model.model_id in used_model_ids:
+                continue
+            expanded.append(inv)
+            used_model_ids.add(inv.model.model_id)
+
+        return expanded[: self.config.max_parallel_models]
 
     # ------------------------------------------------------------------
     # Final synthesis
@@ -450,7 +598,7 @@ class MultiStageCollectiveOrchestrator:
 
     def _select_final_model(
         self,
-        scored_models: Sequence[Tuple[ModelInfo, float]],
+        scored_invocations: Sequence[Tuple[ModelInvocation, float]],
         snapshots: Sequence[RunSnapshot],
     ) -> ModelInfo:
         """
@@ -459,24 +607,25 @@ class MultiStageCollectiveOrchestrator:
         We give preference to models that have already produced content in earlier
         runs with high confidence, falling back to the static priority ladder.
         """
-        # First, search for a participating model that matches the priority ladder.
-        participating_lookup = {}
-        for snapshot in snapshots:
-            for result in snapshot.results:
-                participating_lookup[result.model_id] = result
+        participating_ids = {
+            result.model_id for snapshot in snapshots for result in snapshot.results
+        }
 
-        for preferred_id in self.model_priority:
-            if preferred_id in participating_lookup:
-                # Exact match found amongst participating models.
-                model = next(
-                    (model for model, _score in scored_models if model.model_id == preferred_id),
-                    None,
-                )
-                if model:
-                    return model
+        priority_chain: List[str] = list(self.model_priority)
+        if self.final_synthesis_model_id:
+            priority_chain = [
+                self.final_synthesis_model_id,
+                *[pid for pid in priority_chain if pid != self.final_synthesis_model_id],
+            ]
+
+        for preferred_id in priority_chain:
+            for invocation, _ in scored_invocations:
+                if invocation.model.model_id == preferred_id:
+                    if not participating_ids or preferred_id in participating_ids:
+                        return invocation.model
 
         # Fallback: pick the highest scoring model from the scored list.
-        return scored_models[0][0]
+        return scored_invocations[0][0].model
 
     async def _generate_final_synthesis(
         self,
@@ -500,7 +649,8 @@ class MultiStageCollectiveOrchestrator:
                 truncated = (result.content or "").strip().replace("\n", " ")
                 truncated = truncated[:400] + ("…" if len(truncated) > 400 else "")
                 summary_lines.append(
-                    f"- {result.model_id}: confidence {result.confidence:.2f} → {truncated}"
+                    f"- {result.metadata.get('invocation_label', result.model_id)}: "
+                    f"confidence {result.confidence:.2f} → {truncated}"
                 )
 
         synthesis_prompt = (
@@ -541,7 +691,9 @@ class MultiStageCollectiveOrchestrator:
         )
 
         final_result = await self.model_provider.process_task(
-            synthesis_task, final_model.model_id
+            synthesis_task,
+            final_model.model_id,
+            **self.final_synthesis_options,
         )
 
         return FinalSynthesis(
@@ -550,4 +702,3 @@ class MultiStageCollectiveOrchestrator:
             prompt_tokens=len(synthesis_prompt.split()),
             summary="\n".join(summary_lines),
         )
-

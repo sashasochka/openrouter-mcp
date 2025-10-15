@@ -23,7 +23,7 @@ from .ensemble_reasoning import EnsembleReasoner, EnsembleTask, EnsembleResult
 from .adaptive_router import AdaptiveRouter, RoutingDecision, RoutingMetrics
 from .cross_validator import CrossValidator, ValidationResult, ValidationConfig
 from .collaborative_solver import CollaborativeSolver, SolvingSession, SolvingResult
-from .orchestrator import MultiStageCollectiveOrchestrator, RunConfiguration, RunSnapshot, FinalSynthesis
+from .orchestrator import MultiStageCollectiveOrchestrator, RunConfiguration, RunSnapshot, FinalSynthesis, ModelPlan
 from .base import TaskContext, TaskType, ModelInfo, ProcessingResult, ModelProvider
 
 __all__ = [
@@ -48,6 +48,7 @@ __all__ = [
     'RunConfiguration',
     'RunSnapshot',
     'FinalSynthesis',
+    'ModelPlan',
     'TaskContext',
     'TaskType',
     'ModelInfo',
