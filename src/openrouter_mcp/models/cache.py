@@ -9,6 +9,7 @@ including memory and file-based caching with TTL support.
 import json
 import logging
 import sys
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -93,9 +94,13 @@ class ModelCache:
         try:
             # Import client locally to avoid circular imports
             from ..client.openrouter import OpenRouterClient
-            client = OpenRouterClient.from_env()
+            client = OpenRouterClient(
+                api_key=os.getenv("OPENROUTER_API_KEY"),
+                enable_cache=False
+            )
             async with client:
-                raw_models = await client.list_models()
+                # Disable cache usage here to avoid infinite recursion in ModelCache
+                raw_models = await client.list_models(use_cache=False)
                 logger.info(f"Fetched {len(raw_models)} models from OpenRouter API")
                 
                 # Enhance models with metadata
