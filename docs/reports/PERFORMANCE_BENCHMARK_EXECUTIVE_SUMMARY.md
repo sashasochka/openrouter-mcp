@@ -3,6 +3,8 @@
 ## Overview
 Comprehensive performance testing was conducted on 3 working MCP (Model Context Protocol) collective intelligence tools to evaluate their performance characteristics under different load conditions. The benchmark tested response times, throughput, resource usage, and reliability using mock data to avoid API authentication issues.
 
+The purpose of this project is to provide an external tool that will allow running multiple heavy models in parralel (like 8 gpt5-pro instances + gemini 2.5 pro + grok 4) and then helps to ensemble reductive reasoning so help models re-run with each other's cross-arguments and help deduce the best answer based on that. Each new attempt should run less agents. If there is a high level of agreement - run much less models on the second run. More disagreement - more parralel runs next time. Up to 4 possible total runs. The last step is using the most powerful model to assemble the most advanced answer possible combining the power of the most powerful competetive models from OpenAI, Google, Anthropic and xAI (and more)
+
 ## Tools Tested
 1. **ensemble_reasoning** - Multi-model task decomposition and coordination
 2. **adaptive_model_selection** - Intelligent model routing and selection

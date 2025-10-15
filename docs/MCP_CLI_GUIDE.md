@@ -18,6 +18,9 @@ You can use the `claude_mcp.py` script directly:
 python claude_mcp.py [COMMAND] [OPTIONS]
 ```
 
+The purpose of this project is to provide an external tool that will allow running multiple heavy models in parralel (like 8 gpt5-pro instances + gemini 2.5 pro + grok 4) and then helps to ensemble reductive reasoning so help models re-run with each other's cross-arguments and help deduce the best answer based on that. Each new attempt should run less agents. If there is a high level of agreement - run much less models on the second run. More disagreement - more parralel runs next time. Up to 4 possible total runs. The last step is using the most powerful model to assemble the most advanced answer possible combining the power of the most powerful competetive models from OpenAI, Google, Anthropic and xAI (and more). This execution strategy powers the adaptive multi-run ensemble approach used by the collective tools: an initial wide parallel pass across many competitive models, up to three additional passes with fewer models when agreement is high (or more models if disagreement persists), and a final synthesis pass by the strongest model to produce the consolidated answer.
+
+
 ### Available Commands
 
 #### 1. Add an MCP Server

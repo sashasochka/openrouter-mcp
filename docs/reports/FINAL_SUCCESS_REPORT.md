@@ -1,4 +1,7 @@
-# OpenRouter MCP 집단 지성 시스템 - 최종 테스트 성공 보고서
+# OpenRouter MCP ?? ?? ??? - ?? ??? ?? ???
+
+
+The purpose of this project is to provide an external tool that will allow running multiple heavy models in parralel (like 8 gpt5-pro instances + gemini 2.5 pro + grok 4) and then helps to ensemble reductive reasoning so help models re-run with each other's cross-arguments and help deduce the best answer based on that. Each new attempt should run less agents. If there is a high level of agreement - run much less models on the second run. More disagreement - more parralel runs next time. Up to 4 possible total runs. The last step is using the most powerful model to assemble the most advanced answer possible combining the power of the most powerful competetive models from OpenAI, Google, Anthropic and xAI (and more)
 
 ## 프로젝트 개요
 
@@ -6,6 +9,8 @@
 **버전**: 1.2.0 (NPM @physics91/openrouter-mcp)  
 **완료일**: 2025년 8월 13일  
 **테스트 방법론**: TDD (Test-Driven Development) + 전문 에이전트 활용  
+
+**운영 전략 요약**: 이 프로젝트는 여러 고성능 모델을 초기 병렬 패스로 실행한 뒤, 응답 일치도와 신뢰도를 기반으로 최대 3회의 재실행(초기 포함 총 4회)으로 점진적으로 모델 수를 조정하는 반복적·감소형 앙상블 전략을 사용합니다. 마지막 단계에서는 가장 성능이 우수한 단일 모델이 모든 라운드의 핵심 논거를 종합해 최종 고품질 응답을 생성합니다.
 
 ## 🎯 목표 달성 현황
 

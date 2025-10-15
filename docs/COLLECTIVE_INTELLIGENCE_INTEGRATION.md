@@ -2,7 +2,22 @@
 
 OpenRouter MCP 서버에 집단 지성(Collective Intelligence) 기능이 성공적으로 통합되었습니다. 이 문서는 새로 추가된 MCP 도구들과 사용법을 설명합니다.
 
+The purpose of this project is to provide an external tool that will allow running multiple heavy models in parralel (like 8 gpt5-pro instances + gemini 2.5 pro + grok 4) and then helps to ensemble reductive reasoning so help models re-run with each other's cross-arguments and help deduce the best answer based on that. Each new attempt should run less agents. If there is a high level of agreement - run much less models on the second run. More disagreement - more parralel runs next time. Up to 4 possible total runs. The last step is using the most powerful model to assemble the most advanced answer possible combining the power of the most powerful competetive models from OpenAI, Google, Anthropic and xAI (and more)
+
+
 ## 🧠 통합된 집단 지성 기능
+
+### 운영 전략 (Operational strategy)
+
+이 프로젝트의 목적은 여러 고성능 모델을 병렬로 실행하여(예: 여러 GPT-5-Pro 인스턴스, Gemini 2.5 Pro, Grok 4 등) 각 모델의 응답을 교차 비교하고 반복적·감소형 앙상블(reductive ensemble) 추론을 통해 최종 고품질 답변을 도출하는 것입니다.
+
+- 초기 실행: 많은 모델(예: 8개의 대형 인스턴스 + 여러 경쟁 모델)로 병렬 1차 실행을 수행합니다.
+- 합의 분석: 각 모델 응답의 일치도와 신뢰도(confidence)를 계산합니다.
+- 적응적 재실행: 합의가 높으면 다음 라운드에서는 더 적은 수의 모델만 실행하여 리소스를 절약합니다. 합의가 낮으면 더 많은 병렬 실행을 유지하여 추가 증거를 수집합니다.
+- 반복 제한: 총 최대 4회 실행(초기 실행 포함)으로 설계됩니다. 각 재시도는 이전 라운드의 결과에 따라 모델 수를 줄이거나 늘립니다.
+- 최종 합성: 마지막 단계에서는 가장 강력한 단일 모델(가장 높은 품질/성능을 가진 경쟁 모델)을 사용해 모든 라운드의 결과와 주요 교차 논거를 결합해 최종 고급 답변을 생성합니다.
+
+이 전략은 비용과 지연 시간, 품질 사이의 균형을 자동으로 조정하도록 설계되어 있습니다.
 
 ### 1. **collective_chat_completion**
 다중 모델 합의 기반 채팅 완성

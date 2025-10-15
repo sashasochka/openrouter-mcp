@@ -9,6 +9,9 @@
 ## ✨ Features
 
 - 🧠 **Collective Intelligence System**: Advanced multi-model collaboration and consensus building
+ - 🧠 **Collective Intelligence System**: Advanced multi-model collaboration and consensus building
+  - The purpose of this project is to provide an external tool that will allow running multiple heavy models in parralel (like 8 gpt5-pro instances + gemini 2.5 pro + grok 4) and then helps to ensemble reductive reasoning so help models re-run with each other's cross-arguments and help deduce the best answer based on that. Each new attempt should run less agents. If there is a high level of agreement - run much less models on the second run. More disagreement - more parralel runs next time. Up to 4 possible total runs. The last step is using the most powerful model to assemble the most advanced answer possible combining the power of the most powerful competetive models from OpenAI, Google, Anthropic and xAI (and more)
+  - Operational strategy: run multiple competitive models in an initial parallel pass, analyze agreement/confidence, then perform up to 3 additional re-run passes with progressively fewer models when agreement is high (or more models if disagreement persists). The final step uses the single most powerful model to synthesize the best combined answer.
   - 5 specialized MCP tools for ensemble reasoning and intelligent decision-making
   - Multi-model consensus with automated agreement analysis and quality scoring
   - Ensemble reasoning using specialized models for different task aspects

@@ -8,6 +8,8 @@
 
 The 5 Collective Intelligence MCP tools have been systematically tested for functionality, integration, and performance. The testing revealed that **the core collective intelligence infrastructure is working properly**, with 3 out of 5 tools functioning correctly and 2 tools having minor implementation issues.
 
+The purpose of this project is to provide an external tool that will allow running multiple heavy models in parralel (like 8 gpt5-pro instances + gemini 2.5 pro + grok 4) and then helps to ensemble reductive reasoning so help models re-run with each other's cross-arguments and help deduce the best answer based on that. Each new attempt should run less agents. If there is a high level of agreement - run much less models on the second run. More disagreement - more parralel runs next time. Up to 4 possible total runs. The last step is using the most powerful model to assemble the most advanced answer possible combining the power of the most powerful competetive models from OpenAI, Google, Anthropic and xAI (and more)
+
 ### Overall Assessment: ✅ **INFRASTRUCTURE READY** with minor fixes needed
 
 ---
@@ -163,6 +165,8 @@ The 5 Collective Intelligence MCP tools have been systematically tested for func
 ## Conclusion
 
 The Collective Intelligence MCP tools infrastructure is **fundamentally sound and ready for production use** once the identified issues are resolved. The architecture demonstrates sophisticated multi-model coordination capabilities with good performance characteristics.
+
+Operational note: the core workflow uses an initial broad parallel pass across many competitive models, adaptive re-runs with fewer or more models depending on agreement, and a final single-model synthesis step to maximize answer quality while controlling cost and latency.
 
 ### Key Strengths
 - ✅ Well-designed modular architecture

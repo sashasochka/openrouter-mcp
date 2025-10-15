@@ -4,6 +4,9 @@
 
 OpenRouter MCP 서버에 집단 지성(Collective Intelligence) 기능을 성공적으로 통합하였습니다. 이 통합으로 기존의 단일 모델 기반 MCP 도구들에 더해 다중 모델 협력 기반의 고도화된 AI 오케스트레이션 능력이 추가되었습니다.
 
+The purpose of this project is to provide an external tool that will allow running multiple heavy models in parralel (like 8 gpt5-pro instances + gemini 2.5 pro + grok 4) and then helps to ensemble reductive reasoning so help models re-run with each other's cross-arguments and help deduce the best answer based on that. Each new attempt should run less agents. If there is a high level of agreement - run much less models on the second run. More disagreement - more parralel runs next time. Up to 4 possible total runs. The last step is using the most powerful model to assemble the most advanced answer possible combining the power of the most powerful competetive models from OpenAI, Google, Anthropic and xAI (and more)
+
+
 ## ✅ 완료된 작업 내용
 
 ### 1. 핵심 MCP 도구 통합 (5개)
@@ -118,6 +121,11 @@ class CollaborativeSolvingRequest(BaseModel)
 - 데이터 클래스(`@dataclass`) 적극 활용
 - Enum을 통한 타입 안전성 보장
 - Optional 타입을 통한 null 안전성
+
+### 운영 전략 요약
+
+이 통합은 반복적·감소형 앙상블(reductive ensemble) 전략을 핵심으로 합니다: 초기에는 많은 경쟁 모델을 병렬로 실행하여 다양한 관점을 수집하고, 각 라운드의 응답 일치도와 신뢰도를 분석합니다. 합의도가 높으면 다음 라운드에서는 모델 수를 줄여 비용과 지연을 낮추고, 합의도가 낮으면 추가 증거를 위해 더 많은 모델을 유지하거나 다른 모델을 투입합니다. 이 과정은 총 최대 4회 실행(초기 실행 포함)으로 제한되며, 마지막 라운드에서는 가장 성능이 우수한 단일 모델이 모든 라운드의 핵심 논거와 결과를 종합해 최종 고품질 응답을 생성합니다.
+
 - 불변성 지향 설계
 - 함수형 프로그래밍 패턴 적용
 

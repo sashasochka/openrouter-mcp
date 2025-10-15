@@ -16,6 +16,8 @@
   - `client/`: API 클라이언트 코드
   - `handlers/`: MCP 핸들러들
   - `collective_intelligence/`: 집단 지성 시스템
+    - The purpose of this project is to provide an external tool that will allow running multiple heavy models in parralel (like 8 gpt5-pro instances + gemini 2.5 pro + grok 4) and then helps to ensemble reductive reasoning so help models re-run with each other's cross-arguments and help deduce the best answer based on that. Each new attempt should run less agents. If there is a high level of agreement - run much less models on the second run. More disagreement - more parralel runs next time. Up to 4 possible total runs. The last step is using the most powerful model to assemble the most advanced answer possible combining the power of the most powerful competetive models from OpenAI, Google, Anthropic and xAI (and more)
+    - 목적: 여러 고성능 모델을 병렬로 실행하고 반복적·감소형 앙상블 추론으로 최종 고품질 응답을 생성하는 외부 오케스트레이터 도구
   - `models/`: 데이터 모델 및 캐시
   - `config/`: 설정 관리
   - `utils/`: 유틸리티 함수들
