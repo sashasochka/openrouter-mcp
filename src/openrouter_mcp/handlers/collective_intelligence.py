@@ -27,7 +27,9 @@ from ..collective_intelligence import (
     TaskType,
     ModelInfo,
     ProcessingResult,
-    ModelProvider
+    ModelProvider,
+    MultiStageCollectiveOrchestrator,
+    RunConfiguration
 )
 from ..collective_intelligence.base import ModelCapability
 
@@ -274,6 +276,64 @@ class CollaborativeSolvingRequest(BaseModel):
     constraints: Optional[Dict[str, Any]] = Field(None, description="Problem constraints")
     max_iterations: int = Field(3, description="Maximum number of iteration rounds")
     models: Optional[List[str]] = Field(None, description="Specific models to use")
+
+
+class MultiStageCollectiveRequest(BaseModel):
+    """
+    Request payload for the multi-stage, heavy-model orchestration tool.
+
+    Exposed parameters intentionally mirror the specifications supplied by the user.
+    """
+
+    prompt: str = Field(..., description="Problem statement or question to solve.")
+    task_type: str = Field("reasoning", description="Task type hint (reasoning, analysis, creative, etc.).")
+    candidate_models: Optional[List[str]] = Field(
+        None,
+        description="Optional allowlist of model IDs. Defaults to the orchestrator's power ranking.",
+    )
+    max_runs: int = Field(4, description="Maximum number of orchestration runs (up to four).")
+    initial_model_count: int = Field(8, description="Number of models to launch in the first run.")
+    max_parallel_models: int = Field(12, description="Upper bound on concurrent models per run.")
+    high_agreement_threshold: float = Field(
+        0.75,
+        description="Agreement threshold to aggressively shrink the roster.",
+    )
+    moderate_agreement_threshold: float = Field(
+        0.55,
+        description="Agreement threshold to keep the roster steady.",
+    )
+    timeout_seconds: float = Field(
+        75.0,
+        description="Per-model timeout (seconds) to protect against stalled requests.",
+    )
+    system_prompt: Optional[str] = Field(
+        None,
+        description="Optional system prompt injected into every model call.",
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Arbitrary metadata echoed into the TaskContext.",
+    )
+
+
+class MultiStageRunSummary(BaseModel):
+    """Lightweight description of a single orchestration run."""
+
+    run_index: int
+    agreement_level: str
+    average_similarity: float
+    models: List[Dict[str, Any]]
+
+
+class MultiStageCollectiveResponse(BaseModel):
+    """Structured response returned by the multi-stage orchestration tool."""
+
+    final_model: str
+    final_confidence: float
+    final_answer: str
+    final_metadata: Dict[str, Any]
+    run_summaries: List[MultiStageRunSummary]
+    deliberation_summary: str
 
 
 def get_openrouter_client() -> OpenRouterClient:
@@ -700,3 +760,117 @@ async def collaborative_problem_solving(request: CollaborativeSolvingRequest) ->
     except Exception as e:
         logger.error(f"Collaborative problem solving failed: {str(e)}")
         raise
+
+
+@mcp.tool()
+async def multi_stage_collective_answer(
+    request: MultiStageCollectiveRequest,
+) -> MultiStageCollectiveResponse:
+    """
+    Orchestrate the full multi-run, heavy-model collective intelligence workflow.
+
+    The function mirrors the specification verbatim:
+    1. Launch a wide, heavyweight swarm (default eight models from multiple vendors).
+    2. Measure agreement and adapt the population (shrink on consensus, expand on disagreement).
+    3. Repeat up to four total runs.
+    4. Ask the single most powerful available model to synthesise the definitive answer.
+    """
+
+    logger.info(
+        "Starting multi-stage collective orchestration "
+        f"(max_runs={request.max_runs}, initial_models={request.initial_model_count})"
+    )
+
+    # Derive orchestration configuration while applying safety clamps.
+    run_config = RunConfiguration(
+        max_runs=max(1, min(request.max_runs, 4)),
+        initial_model_count=max(2, request.initial_model_count),
+        max_parallel_models=max(2, request.max_parallel_models),
+        high_agreement_threshold=min(1.0, max(0.0, request.high_agreement_threshold)),
+        moderate_agreement_threshold=min(
+            1.0, max(0.0, request.moderate_agreement_threshold)
+        ),
+        timeout_seconds=max(5.0, request.timeout_seconds),
+    )
+
+    # Create the base TaskContext.  We reuse the helper so that task-type parsing
+    # and validation stays centralised.
+    requirements = {}
+    if request.system_prompt:
+        requirements["system_prompt"] = request.system_prompt
+
+    task = create_task_context(
+        content=request.prompt,
+        task_type=request.task_type,
+        requirements=requirements,
+    )
+
+    # Ensure downstream telemetry carries provenance details.
+    task.metadata.update(request.metadata or {})
+    task.metadata["orchestration_tool"] = "multi_stage_collective_answer"
+
+    client = get_openrouter_client()
+    model_provider = OpenRouterModelProvider(client)
+    orchestrator = MultiStageCollectiveOrchestrator(
+        model_provider=model_provider,
+        run_config=run_config,
+    )
+
+    try:
+        async with client:
+            final_synthesis, snapshots = await orchestrator.orchestrate(
+                task, candidate_models=request.candidate_models
+            )
+    except Exception as exc:
+        logger.error(f"Multi-stage orchestration failed: {exc}")
+        raise
+
+    # Convert internal snapshots into response-friendly structures.
+    run_summaries: List[MultiStageRunSummary] = []
+    for snapshot in snapshots:
+        model_entries: List[Dict[str, Any]] = []
+        for result in snapshot.results:
+            excerpt = (result.content or "").strip()
+            excerpt = excerpt[:280] + ("…" if len(excerpt) > 280 else "")
+            model_entries.append(
+                {
+                    "model_id": result.model_id,
+                    "confidence": result.confidence,
+                    "tokens_used": result.tokens_used,
+                    "cost": result.cost,
+                    "processing_time": result.processing_time,
+                    "excerpt": excerpt,
+                }
+            )
+
+        run_summaries.append(
+            MultiStageRunSummary(
+                run_index=snapshot.run_index,
+                agreement_level=snapshot.agreement_level.value,
+                average_similarity=snapshot.average_similarity,
+                models=model_entries,
+            )
+        )
+
+    final_metadata = {
+        "model_id": final_synthesis.model_id,
+        "prompt_tokens": final_synthesis.prompt_tokens,
+        "deliberation_runs": len(snapshots),
+    }
+
+    # Assemble the Pydantic response for consistent downstream contracts.
+    response = MultiStageCollectiveResponse(
+        final_model=final_synthesis.model_id,
+        final_confidence=final_synthesis.result.confidence,
+        final_answer=final_synthesis.result.content,
+        final_metadata=final_metadata,
+        run_summaries=run_summaries,
+        deliberation_summary=final_synthesis.summary,
+    )
+
+    logger.info(
+        "Completed multi-stage collective orchestration "
+        f"(final_model={response.final_model}, runs={len(run_summaries)})"
+    )
+
+    return response.model_dump()
