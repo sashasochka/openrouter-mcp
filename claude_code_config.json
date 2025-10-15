@@ -1,6 +1,7 @@
 {
   "mcpServers": {
     "openrouter-mcp": {
+      "preset": "@preset/fast-mcp-orchestrator",
       "command": "python",
       "args": ["-m", "src.openrouter_mcp.server"],
       "cwd": "G:\\ai-dev\\Openrouter-mcp",
