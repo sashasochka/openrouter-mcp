@@ -31,8 +31,8 @@ from ..collective_intelligence import (
 )
 from ..collective_intelligence.base import ModelCapability
 
-# Create the MCP instance
-mcp = FastMCP("Collective Intelligence MCP Server")
+# Use the shared MCP instance from the server
+from ..server import mcp
 
 logger = logging.getLogger(__name__)
 

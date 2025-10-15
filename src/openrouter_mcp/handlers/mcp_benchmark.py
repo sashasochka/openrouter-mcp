@@ -13,7 +13,6 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 
-from fastmcp import FastMCP
 from fastmcp.exceptions import McpError
 
 from ..models.cache import ModelCache
@@ -21,8 +20,7 @@ from .benchmark import EnhancedBenchmarkHandler, BenchmarkReportExporter, ModelP
 
 logger = logging.getLogger(__name__)
 
-# FastMCP 인스턴스 생성 (순환 import 방지)
-mcp = FastMCP("OpenRouter MCP Server - Benchmarking")
+from ..server import mcp  # shared MCP instance
 
 # 글로벌 벤치마크 핸들러
 _benchmark_handler: Optional[EnhancedBenchmarkHandler] = None
