@@ -5,13 +5,9 @@ import io
 from typing import Any, Dict, List, Optional, Union, Tuple
 from pydantic import BaseModel, Field, field_validator
 from PIL import Image
-from fastmcp import FastMCP
 
 from ..client.openrouter import OpenRouterClient
-
-
-# Create the MCP instance
-mcp = FastMCP("OpenRouter MCP Server - Multimodal")
+from ..server import mcp
 
 
 logger = logging.getLogger(__name__)

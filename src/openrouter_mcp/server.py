@@ -39,10 +39,15 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Create FastMCP instance  (define BEFORE importing handlers)
+# Create FastMCP instance (must be defined before importing handlers)
 mcp = FastMCP("openrouter-mcp")
 
-# Now import handlers so their @mcp.tool decorators run
+"""
+Import handler modules so their @mcp.tool decorators execute during import
+and register tools on the shared "mcp" instance above.
+
+Handlers must import `mcp` from this module (no local FastMCP instances).
+"""
 try:
     from .handlers import chat  # noqa: F401
     from .handlers import multimodal  # noqa: F401
@@ -71,10 +76,6 @@ def validate_environment() -> None:
         raise ValueError(f"Missing required environment variables: {missing_vars}")
     
     logger.info("Environment validation successful")
-
-
-# Create FastMCP instance
-mcp = FastMCP("openrouter-mcp")
 
 
 def create_app():

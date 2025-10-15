@@ -2,13 +2,9 @@ import os
 import logging
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field
-from fastmcp import FastMCP
 
 from ..client.openrouter import OpenRouterClient
-
-
-# Create the MCP instance
-mcp = FastMCP("OpenRouter MCP Server")
+from ..server import mcp
 
 
 logger = logging.getLogger(__name__)
